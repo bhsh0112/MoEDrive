@@ -119,12 +119,22 @@ class TransfuserModel(nn.Module):
         query = self._query_embedding.weight[None, ...].repeat(batch_size, 1, 1)
         # MoE decoder returns (output, aux). We keep downstream behavior unchanged by
         # only using the output tensor here. Aux can be wired into training later.
-        query_out, _ = self._tf_decoder(query, keyval)
+        query_out, moe_aux = self._tf_decoder(query, keyval)
 
         bev_semantic_map = self._bev_semantic_head(bev_feature_upscale)
         trajectory_query, agents_query = query_out.split(self._query_splits, dim=1)
 
         output: Dict[str, torch.Tensor] = {"bev_semantic_map": bev_semantic_map}
+        # Expose MoE auxiliary losses and routing statistics for training/monitoring.
+        output.update(
+            {
+                "moe_aux_loss": moe_aux.get("moe_aux_loss"),
+                "moe_load_balance_loss": moe_aux.get("moe_load_balance_loss"),
+                "moe_router_z_loss": moe_aux.get("moe_router_z_loss"),
+                "moe_usage_fraction": moe_aux.get("moe_usage_fraction"),
+                "moe_usage_counts": moe_aux.get("moe_usage_counts"),
+            }
+        )
         trajectory = self._trajectory_head(trajectory_query)
         output.update(trajectory)
 
