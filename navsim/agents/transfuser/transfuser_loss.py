@@ -36,7 +36,32 @@ def transfuser_loss(
         + config.bev_semantic_weight * bev_semantic_loss
         + config.moe_aux_loss_weight * moe_aux_loss
     )
-    return loss
+
+    # Build a scalar-only loss dict for PyTorch Lightning logging.
+    loss_dict: Dict[str, torch.Tensor] = {
+        "loss": loss,
+        "trajectory_loss": config.trajectory_weight * trajectory_loss,
+        "agent_class_loss": config.agent_class_weight * agent_class_loss,
+        "agent_box_loss": config.agent_box_weight * agent_box_loss,
+        "bev_semantic_loss": config.bev_semantic_weight * bev_semantic_loss,
+        "moe_aux_loss": config.moe_aux_loss_weight * moe_aux_loss,
+    }
+
+    # Optional MoE components (may be None if model doesn't expose them)
+    moe_lb = predictions.get("moe_load_balance_loss")
+    if moe_lb is not None:
+        loss_dict["moe_load_balance_loss"] = config.moe_aux_loss_weight * moe_lb
+    moe_z = predictions.get("moe_router_z_loss")
+    if moe_z is not None:
+        loss_dict["moe_router_z_loss"] = config.moe_aux_loss_weight * moe_z
+
+    # Log expert usage as per-expert scalars to satisfy `self.log`.
+    usage_frac = predictions.get("moe_usage_fraction")
+    if usage_frac is not None and usage_frac.ndim == 1:
+        for i in range(int(usage_frac.shape[0])):
+            loss_dict[f"moe_usage_fraction_e{i}"] = usage_frac[i]
+
+    return loss_dict
 
 
 def _agent_loss(

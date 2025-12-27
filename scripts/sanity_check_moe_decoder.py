@@ -14,8 +14,16 @@ or:
 from __future__ import annotations
 
 import argparse
+import sys
+from pathlib import Path
 
 import torch
+
+# Make repo importable when running as a plain script.
+# This allows `import navsim...` without installing the project as a package.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from navsim.agents.moe_transformer_decoder import MoEConfig, MoETransformerDecoder, MoETransformerDecoderLayer
 

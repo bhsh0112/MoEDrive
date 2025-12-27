@@ -53,6 +53,18 @@ def transfuser_loss(
         'bev_semantic_loss': config.bev_semantic_weight*bev_semantic_loss,
         'moe_aux_loss': config.moe_aux_loss_weight*moe_aux_loss,
     }
+    # Optional MoE components (if present in model outputs)
+    if "moe_load_balance_loss" in predictions and predictions["moe_load_balance_loss"] is not None:
+        loss_dict["moe_load_balance_loss"] = config.moe_aux_loss_weight * predictions["moe_load_balance_loss"]
+    if "moe_router_z_loss" in predictions and predictions["moe_router_z_loss"] is not None:
+        loss_dict["moe_router_z_loss"] = config.moe_aux_loss_weight * predictions["moe_router_z_loss"]
+
+    # Log expert usage as per-expert scalars to satisfy `self.log`.
+    usage_frac = predictions.get("moe_usage_fraction")
+    if usage_frac is not None and hasattr(usage_frac, "ndim") and usage_frac.ndim == 1:
+        for i in range(int(usage_frac.shape[0])):
+            loss_dict[f"moe_usage_fraction_e{i}"] = usage_frac[i]
+
     if "trajectory_loss_dict" in predictions:
         trajectory_loss_dict = predictions["trajectory_loss_dict"]
         loss_dict.update(trajectory_loss_dict)
