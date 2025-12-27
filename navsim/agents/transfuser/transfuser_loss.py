@@ -24,11 +24,17 @@ def transfuser_loss(
     bev_semantic_loss = F.cross_entropy(
         predictions["bev_semantic_map"], targets["bev_semantic_map"].long()
     )
+
+    moe_aux_loss = predictions.get("moe_aux_loss")
+    if moe_aux_loss is None:
+        moe_aux_loss = torch.zeros((), device=trajectory_loss.device, dtype=trajectory_loss.dtype)
+
     loss = (
         config.trajectory_weight * trajectory_loss
         + config.agent_class_weight * agent_class_loss
         + config.agent_box_weight * agent_box_loss
         + config.bev_semantic_weight * bev_semantic_loss
+        + config.moe_aux_loss_weight * moe_aux_loss
     )
     return loss
 

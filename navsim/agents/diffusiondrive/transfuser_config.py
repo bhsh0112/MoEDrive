@@ -75,6 +75,9 @@ class TransfuserConfig:
     tf_num_head: int = 8
     tf_dropout: float = 0.0
 
+    # MoE loss weight (added to total training loss)
+    moe_aux_loss_weight: float = 0.0
+
     # detection
     num_bounding_boxes: int = 30
 

@@ -31,12 +31,18 @@ def transfuser_loss(
         diffusion_loss = predictions['diffusion_loss']
     else:
         diffusion_loss = 0
+
+    moe_aux_loss = predictions.get("moe_aux_loss")
+    if moe_aux_loss is None:
+        moe_aux_loss = torch.zeros((), device=bev_semantic_loss.device, dtype=bev_semantic_loss.dtype)
+
     loss = (
         config.trajectory_weight * trajectory_loss
         + config.diff_loss_weight * diffusion_loss
         + config.agent_class_weight * agent_class_loss
         + config.agent_box_weight * agent_box_loss
         + config.bev_semantic_weight * bev_semantic_loss
+        + config.moe_aux_loss_weight * moe_aux_loss
     )
     loss_dict = {
         'loss': loss,
@@ -44,7 +50,8 @@ def transfuser_loss(
         'diffusion_loss': config.diff_loss_weight*diffusion_loss,
         'agent_class_loss': config.agent_class_weight*agent_class_loss,
         'agent_box_loss': config.agent_box_weight*agent_box_loss,
-        'bev_semantic_loss': config.bev_semantic_weight*bev_semantic_loss
+        'bev_semantic_loss': config.bev_semantic_weight*bev_semantic_loss,
+        'moe_aux_loss': config.moe_aux_loss_weight*moe_aux_loss,
     }
     if "trajectory_loss_dict" in predictions:
         trajectory_loss_dict = predictions["trajectory_loss_dict"]
