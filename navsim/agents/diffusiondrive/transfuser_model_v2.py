@@ -14,6 +14,7 @@ from navsim.agents.diffusiondrive.modules.blocks import linear_relu_ln,bias_init
 from navsim.agents.diffusiondrive.modules.multimodal_loss import LossComputer
 from torch.nn import TransformerDecoder,TransformerDecoderLayer
 from typing import Any, List, Dict, Optional, Union
+from navsim.agents.moe_transformer_decoder import MoEConfig, MoETransformerDecoder, MoETransformerDecoderLayer
 class V2TransfuserModel(nn.Module):
     """Torch module for Transfuser."""
 
@@ -73,7 +74,23 @@ class V2TransfuserModel(nn.Module):
             batch_first=True,
         )
 
-        self._tf_decoder = nn.TransformerDecoder(tf_decoder_layer, config.tf_num_layers)
+        # Fully replace vanilla TransformerDecoder with MoE-based decoder.
+        # We keep the same I/O contract for downstream heads: (B, Q, D) -> (B, Q, D).
+        moe_cfg = MoEConfig(
+            num_experts=getattr(config, "moe_num_experts", 4),
+            top_k=getattr(config, "moe_top_k", 2),
+            router_temperature=getattr(config, "moe_router_temperature", 1.0),
+            router_z_loss_coef=getattr(config, "moe_router_z_loss_coef", 0.0),
+            load_balance_coef=getattr(config, "moe_load_balance_coef", 0.0),
+        )
+        moe_layer = MoETransformerDecoderLayer(
+            d_model=config.tf_d_model,
+            nhead=config.tf_num_head,
+            dim_feedforward=config.tf_d_ffn,
+            dropout=config.tf_dropout,
+            moe_cfg=moe_cfg,
+        )
+        self._tf_decoder = MoETransformerDecoder(moe_layer, config.tf_num_layers)
         self._agent_head = AgentHead(
             num_agents=config.num_bounding_boxes,
             d_ffn=config.tf_d_ffn,
@@ -122,7 +139,9 @@ class V2TransfuserModel(nn.Module):
         cross_bev_feature = self.bev_proj(cross_bev_feature.flatten(-2,-1).permute(0,2,1))
         cross_bev_feature = cross_bev_feature.permute(0,2,1).contiguous().view(batch_size, -1, bev_spatial_shape[0], bev_spatial_shape[1])
         query = self._query_embedding.weight[None, ...].repeat(batch_size, 1, 1)
-        query_out = self._tf_decoder(query, keyval)
+        # MoE decoder returns (output, aux). We keep downstream behavior unchanged by
+        # only using the output tensor here. Aux can be wired into training later.
+        query_out, _ = self._tf_decoder(query, keyval)
 
         bev_semantic_map = self._bev_semantic_head(bev_feature_upscale)
         trajectory_query, agents_query = query_out.split(self._query_splits, dim=1)
