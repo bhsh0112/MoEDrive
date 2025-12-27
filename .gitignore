@@ -1,0 +1,52 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDEs
+.idea/
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+*.log.json
+*.out
+
+# Training / experiment artifacts (DiffusionDrive)
+work_dirs/
+job_data/work_dirs/
+.dist_test/
+vis/
+
+# Checkpoints / weights
+ckpts/
+*.pth
+*.pt
+*.ckpt
+*.onnx
+
+# Dataset caches / outputs (keep source code in repo, avoid huge generated data)
+data
+
+dataset/
+exp/
+
+
+
