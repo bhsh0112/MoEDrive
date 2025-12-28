@@ -83,7 +83,7 @@ class TransfuserConfig:
     moe_load_balance_coef: float = 1e-2
     moe_router_z_loss_coef: float = 1e-3
     # MoE loss weight (added to total training loss)
-    moe_aux_loss_weight: float = 1.0
+    moe_aux_loss_weight: float = 2.0
 
     # detection
     num_bounding_boxes: int = 30
