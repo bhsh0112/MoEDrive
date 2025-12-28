@@ -14,7 +14,7 @@ from navsim.agents.diffusiondrive.modules.blocks import linear_relu_ln,bias_init
 from navsim.agents.diffusiondrive.modules.multimodal_loss import LossComputer
 from torch.nn import TransformerDecoder,TransformerDecoderLayer
 from typing import Any, List, Dict, Optional, Union
-from navsim.agents.moe_transformer_decoder import MoEConfig, MoETransformerDecoder, MoETransformerDecoderLayer
+from navsim.agents.moe_transformer_decoder import MoEConfig, MoELayerwiseTransformerDecoder
 class V2TransfuserModel(nn.Module):
     """Torch module for Transfuser."""
 
@@ -83,14 +83,15 @@ class V2TransfuserModel(nn.Module):
             router_z_loss_coef=getattr(config, "moe_router_z_loss_coef", 0.0),
             load_balance_coef=getattr(config, "moe_load_balance_coef", 0.0),
         )
-        moe_layer = MoETransformerDecoderLayer(
+        # Aggressive variant: route between *full decoder layers* (self-attn + cross-attn + FFN) as experts.
+        self._tf_decoder = MoELayerwiseTransformerDecoder(
             d_model=config.tf_d_model,
             nhead=config.tf_num_head,
             dim_feedforward=config.tf_d_ffn,
             dropout=config.tf_dropout,
+            num_layers=config.tf_num_layers,
             moe_cfg=moe_cfg,
         )
-        self._tf_decoder = MoETransformerDecoder(moe_layer, config.tf_num_layers)
         self._agent_head = AgentHead(
             num_agents=config.num_bounding_boxes,
             d_ffn=config.tf_d_ffn,
