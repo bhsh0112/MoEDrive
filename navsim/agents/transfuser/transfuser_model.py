@@ -75,6 +75,7 @@ class TransfuserModel(nn.Module):
             num_experts=getattr(config, "moe_num_experts", 4),
             top_k=getattr(config, "moe_top_k", 2),
             router_temperature=getattr(config, "moe_router_temperature", 1.0),
+            router_noise_std=getattr(config, "moe_router_noise_std", 0.0),
             router_z_loss_coef=getattr(config, "moe_router_z_loss_coef", 0.0),
             load_balance_coef=getattr(config, "moe_load_balance_coef", 0.0),
         )

@@ -73,15 +73,17 @@ class TransfuserConfig:
     tf_num_head: int = 8
     tf_dropout: float = 0.0
 
-    # MoE decoder hyper-parameters (used by MoETransformerDecoder)
-    moe_num_experts: int = 4
-    moe_top_k: int = 2
-    moe_router_temperature: float = 1.0
+    # MoE decoder hyper-parameters
+    # Stronger defaults to increase MoE specialization/impact.
+    moe_num_experts: int = 8
+    moe_top_k: int = 1
+    moe_router_temperature: float = 0.7
+    moe_router_noise_std: float = 0.1
     # Coefficients inside MoE module (before summing into `moe_aux_loss`)
-    moe_load_balance_coef: float = 1e-2
-    moe_router_z_loss_coef: float = 1e-3
+    moe_load_balance_coef: float = 5e-2
+    moe_router_z_loss_coef: float = 5e-3
     # MoE loss weight (added to total training loss)
-    moe_aux_loss_weight: float = 1.0
+    moe_aux_loss_weight: float = 2.0
 
     # detection
     num_bounding_boxes: int = 30

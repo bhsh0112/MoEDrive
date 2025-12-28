@@ -32,6 +32,7 @@ class MoEConfig:
     router_z_loss_coef: float = 0.0
     load_balance_coef: float = 0.0
     router_temperature: float = 1.0
+    router_noise_std: float = 0.0
 
 
 class MoEFeedForward(nn.Module):
@@ -87,6 +88,8 @@ class MoEFeedForward(nn.Module):
         moe_cfg = self.moe_cfg
 
         router_logits = self.router(x)  # (B, T, E)
+        if self.training and moe_cfg.router_noise_std > 0:
+            router_logits = router_logits + torch.randn_like(router_logits) * moe_cfg.router_noise_std
         if moe_cfg.router_temperature != 1.0:
             router_logits = router_logits / max(moe_cfg.router_temperature, 1e-6)
 
@@ -341,9 +344,10 @@ class MoELayerwiseTransformerDecoder(nn.Module):
         self.moe_cfg = moe_cfg
         self.num_layers = num_layers
 
-        # Router per layer position (sample-level routing, input is pooled query state)
+        # Router per layer position (sample-level routing).
+        # We feed pooled query + pooled memory to make routing more informative.
         self.routers = nn.ModuleList(
-            [nn.Linear(d_model, moe_cfg.num_experts, bias=False) for _ in range(num_layers)]
+            [nn.Linear(2 * d_model, moe_cfg.num_experts, bias=False) for _ in range(num_layers)]
         )
 
         # Expert layers per layer position
@@ -381,9 +385,15 @@ class MoELayerwiseTransformerDecoder(nn.Module):
         usage_counts = tgt.new_zeros((moe_cfg.num_experts,), dtype=tgt.dtype)
 
         for layer_idx in range(self.num_layers):
-            # Sample-level router input: pool over query tokens (mean)
-            pooled = x.mean(dim=1)  # (B, D)
-            logits = self.routers[layer_idx](pooled)  # (B, E)
+            # Sample-level router input:
+            # - query pooled over tokens
+            # - memory pooled: use first token as a "status" summary if present, else mean
+            pooled_q = x.mean(dim=1)  # (B, D)
+            pooled_m = memory[:, 0] if memory.shape[1] > 0 else memory.mean(dim=1)  # (B, D)
+            router_in = torch.cat([pooled_q, pooled_m], dim=-1)  # (B, 2D)
+            logits = self.routers[layer_idx](router_in)  # (B, E)
+            if self.training and moe_cfg.router_noise_std > 0:
+                logits = logits + torch.randn_like(logits) * moe_cfg.router_noise_std
             if moe_cfg.router_temperature != 1.0:
                 logits = logits / max(moe_cfg.router_temperature, 1e-6)
 
