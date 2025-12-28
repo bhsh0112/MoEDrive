@@ -25,11 +25,23 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from navsim.agents.moe_transformer_decoder import MoEConfig, MoETransformerDecoder, MoETransformerDecoderLayer
+from navsim.agents.moe_transformer_decoder import (
+    MoEConfig,
+    MoETransformerDecoder,
+    MoETransformerDecoderLayer,
+    MoELayerwiseTransformerDecoder,
+)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--variant",
+        type=str,
+        default="both",
+        choices=["ffn", "layer", "both"],
+        help="ffn: FFN-MoE decoder; layer: layer-wise MoE (full-layer experts); both: run both",
+    )
     parser.add_argument("--batch", type=int, default=2)
     parser.add_argument("--q", type=int, default=31, help="query tokens, e.g. 1 + num_bounding_boxes")
     parser.add_argument("--s", type=int, default=65, help="memory tokens, e.g. 8*8 + 1")
@@ -55,34 +67,55 @@ def main() -> None:
         router_z_loss_coef=args.z,
         load_balance_coef=args.lb,
     )
-    layer = MoETransformerDecoderLayer(
-        d_model=args.d,
-        nhead=args.heads,
-        dim_feedforward=args.dff,
-        dropout=args.dropout,
-        moe_cfg=moe_cfg,
-    )
-    decoder = MoETransformerDecoder(layer, args.layers).to(device)
 
     tgt = torch.randn(args.batch, args.q, args.d, device=device)
     mem = torch.randn(args.batch, args.s, args.d, device=device)
 
-    out, aux = decoder(tgt, mem)
+    def _run_one(name: str, decoder: torch.nn.Module) -> None:
+        out, aux = decoder(tgt, mem)
 
-    assert out.shape == (args.batch, args.q, args.d), f"bad out shape: {out.shape}"
-    for k in ["moe_aux_loss", "moe_load_balance_loss", "moe_router_z_loss", "moe_usage_counts", "moe_usage_fraction"]:
-        assert k in aux, f"missing aux key: {k}"
+        assert out.shape == (args.batch, args.q, args.d), f"[{name}] bad out shape: {out.shape}"
+        for k in [
+            "moe_aux_loss",
+            "moe_load_balance_loss",
+            "moe_router_z_loss",
+            "moe_usage_counts",
+            "moe_usage_fraction",
+        ]:
+            assert k in aux, f"[{name}] missing aux key: {k}"
 
-    # Basic numeric checks
-    assert torch.isfinite(out).all(), "output contains NaN/Inf"
-    for k, v in aux.items():
-        assert torch.isfinite(v).all(), f"aux[{k}] contains NaN/Inf"
+        # Basic numeric checks
+        assert torch.isfinite(out).all(), f"[{name}] output contains NaN/Inf"
+        for k, v in aux.items():
+            assert torch.isfinite(v).all(), f"[{name}] aux[{k}] contains NaN/Inf"
 
-    print("OK: out.shape =", tuple(out.shape))
-    print("moe_aux_loss =", float(aux["moe_aux_loss"].detach().cpu()))
-    print("moe_load_balance_loss =", float(aux["moe_load_balance_loss"].detach().cpu()))
-    print("moe_router_z_loss =", float(aux["moe_router_z_loss"].detach().cpu()))
-    print("moe_usage_fraction =", aux["moe_usage_fraction"].detach().cpu().tolist())
+        print(f"[{name}] OK: out.shape =", tuple(out.shape))
+        print(f"[{name}] moe_aux_loss =", float(aux["moe_aux_loss"].detach().cpu()))
+        print(f"[{name}] moe_load_balance_loss =", float(aux["moe_load_balance_loss"].detach().cpu()))
+        print(f"[{name}] moe_router_z_loss =", float(aux["moe_router_z_loss"].detach().cpu()))
+        print(f"[{name}] moe_usage_fraction =", aux["moe_usage_fraction"].detach().cpu().tolist())
+
+    if args.variant in ("ffn", "both"):
+        layer = MoETransformerDecoderLayer(
+            d_model=args.d,
+            nhead=args.heads,
+            dim_feedforward=args.dff,
+            dropout=args.dropout,
+            moe_cfg=moe_cfg,
+        )
+        decoder_ffn = MoETransformerDecoder(layer, args.layers).to(device)
+        _run_one("ffn_moe", decoder_ffn)
+
+    if args.variant in ("layer", "both"):
+        decoder_layer = MoELayerwiseTransformerDecoder(
+            d_model=args.d,
+            nhead=args.heads,
+            dim_feedforward=args.dff,
+            dropout=args.dropout,
+            num_layers=args.layers,
+            moe_cfg=moe_cfg,
+        ).to(device)
+        _run_one("layerwise_moe", decoder_layer)
 
 
 if __name__ == "__main__":
