@@ -75,17 +75,20 @@ class TransfuserConfig:
     tf_num_head: int = 8
     tf_dropout: float = 0.0
 
-    # MoE decoder hyper-parameters (used by MoETransformerDecoder)
-    # More aggressive defaults to increase MoE impact (can be overridden via Hydra CLI).
+    # MoE decoder hyper-parameters
+    # Tuned default (Strategy A): keep capacity, avoid over-regularizing / overly-hard routing.
+    # - E=8 increases capacity
+    # - top-k=2 avoids hard single-expert routing (prevents expert starvation)
+    # - no router noise by default (stability)
     moe_num_experts: int = 8
-    moe_top_k: int = 1
-    moe_router_temperature: float = 0.7
-    moe_router_noise_std: float = 0.1
+    moe_top_k: int = 2
+    moe_router_temperature: float = 1.0
+    moe_router_noise_std: float = 0.0
     # Coefficients inside MoE module (before summing into `moe_aux_loss`)
-    moe_load_balance_coef: float = 5e-2
+    moe_load_balance_coef: float = 5e-3
     moe_router_z_loss_coef: float = 1e-3
     # MoE loss weight (added to total training loss)
-    moe_aux_loss_weight: float = 2.0
+    moe_aux_loss_weight: float = 0.5
 
     # detection
     num_bounding_boxes: int = 30
