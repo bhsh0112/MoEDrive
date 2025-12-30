@@ -32,6 +32,9 @@ class MoEConfig:
     router_z_loss_coef: float = 0.0
     load_balance_coef: float = 0.0
     router_temperature: float = 1.0
+    # Add Gaussian noise to router logits during training to encourage exploration/specialization.
+    # Set to 0.0 to disable.
+    router_noise_std: float = 0.0
 
 
 class MoEFeedForward(nn.Module):
@@ -89,6 +92,8 @@ class MoEFeedForward(nn.Module):
         router_logits = self.router(x)  # (B, T, E)
         if moe_cfg.router_temperature != 1.0:
             router_logits = router_logits / max(moe_cfg.router_temperature, 1e-6)
+        if self.training and moe_cfg.router_noise_std > 0:
+            router_logits = router_logits + torch.randn_like(router_logits) * moe_cfg.router_noise_std
 
         topk_vals, topk_idx = torch.topk(router_logits, k=moe_cfg.top_k, dim=-1)  # (B, T, K)
         topk_w = F.softmax(topk_vals, dim=-1, dtype=torch.float32).to(x.dtype)  # (B, T, K)
@@ -386,6 +391,8 @@ class MoELayerwiseTransformerDecoder(nn.Module):
             logits = self.routers[layer_idx](pooled)  # (B, E)
             if moe_cfg.router_temperature != 1.0:
                 logits = logits / max(moe_cfg.router_temperature, 1e-6)
+            if self.training and moe_cfg.router_noise_std > 0:
+                logits = logits + torch.randn_like(logits) * moe_cfg.router_noise_std
 
             topk_vals, topk_idx = torch.topk(logits, k=moe_cfg.top_k, dim=-1)  # (B, K)
             topk_w = F.softmax(topk_vals, dim=-1, dtype=torch.float32).to(x.dtype)  # (B, K)

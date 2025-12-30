@@ -76,11 +76,13 @@ class TransfuserConfig:
     tf_dropout: float = 0.0
 
     # MoE decoder hyper-parameters (used by MoETransformerDecoder)
-    moe_num_experts: int = 4
-    moe_top_k: int = 2
-    moe_router_temperature: float = 1.0
+    # More aggressive defaults to increase MoE impact (can be overridden via Hydra CLI).
+    moe_num_experts: int = 8
+    moe_top_k: int = 1
+    moe_router_temperature: float = 0.7
+    moe_router_noise_std: float = 0.1
     # Coefficients inside MoE module (before summing into `moe_aux_loss`)
-    moe_load_balance_coef: float = 1e-2
+    moe_load_balance_coef: float = 5e-2
     moe_router_z_loss_coef: float = 1e-3
     # MoE loss weight (added to total training loss)
     moe_aux_loss_weight: float = 2.0
