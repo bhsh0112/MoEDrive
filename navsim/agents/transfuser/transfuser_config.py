@@ -78,7 +78,6 @@ class TransfuserConfig:
     moe_num_experts: int = 8
     moe_top_k: int = 2
     moe_router_temperature: float = 1.0
-    moe_router_noise_std: float = 0.0
     # Coefficients inside MoE module (before summing into `moe_aux_loss`)
     moe_load_balance_coef: float = 5e-3
     moe_router_z_loss_coef: float = 1e-3
