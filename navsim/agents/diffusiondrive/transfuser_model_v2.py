@@ -12,6 +12,7 @@ from navsim.agents.diffusiondrive.modules.conditional_unet1d import ConditionalU
 import torch.nn.functional as F
 from navsim.agents.diffusiondrive.modules.blocks import linear_relu_ln,bias_init_with_prob, gen_sineembed_for_position, GridSampleCrossBEVAttention
 from navsim.agents.diffusiondrive.modules.multimodal_loss import LossComputer
+from navsim.agents.diffusiondrive.modules.moe_trajectory_head import MoETrajectoryHead
 from torch.nn import TransformerDecoder,TransformerDecoderLayer
 from typing import Any, List, Dict, Optional, Union
 from navsim.agents.moe_transformer_decoder import MoEConfig, MoELayerwiseTransformerDecoder
@@ -98,13 +99,28 @@ class V2TransfuserModel(nn.Module):
             d_model=config.tf_d_model,
         )
 
-        self._trajectory_head = TrajectoryHead(
-            num_poses=config.trajectory_sampling.num_poses,
-            d_ffn=config.tf_d_ffn,
-            d_model=config.tf_d_model,
-            plan_anchor_path=config.plan_anchor_path,
-            config=config,
-        )
+        # Use MOE-based trajectory head instead of diffusion-based
+        use_moe_trajectory = getattr(config, "use_moe_trajectory", True)
+        if use_moe_trajectory:
+            self._trajectory_head = MoETrajectoryHead(
+                num_poses=config.trajectory_sampling.num_poses,
+                d_ffn=config.tf_d_ffn,
+                d_model=config.tf_d_model,
+                plan_anchor_path=config.plan_anchor_path,
+                config=config,
+                num_experts=getattr(config, "moe_trajectory_num_experts", 4),
+                top_k=getattr(config, "moe_trajectory_top_k", 2),
+                num_modes=getattr(config, "moe_trajectory_num_modes", 20),
+            )
+        else:
+            # Fallback to diffusion-based trajectory head
+            self._trajectory_head = TrajectoryHead(
+                num_poses=config.trajectory_sampling.num_poses,
+                d_ffn=config.tf_d_ffn,
+                d_model=config.tf_d_model,
+                plan_anchor_path=config.plan_anchor_path,
+                config=config,
+            )
         self.bev_proj = nn.Sequential(
             *linear_relu_ln(256, 1, 1,320),
         )

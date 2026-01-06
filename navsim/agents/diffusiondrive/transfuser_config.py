@@ -89,6 +89,16 @@ class TransfuserConfig:
     # MoE loss weight (added to total training loss)
     moe_aux_loss_weight: float = 0.5
 
+    # MoE Trajectory Head hyper-parameters
+    # Whether to use MOE-based trajectory head instead of diffusion-based
+    use_moe_trajectory: bool = False
+    # Number of MOE experts for trajectory generation
+    moe_trajectory_num_experts: int = 4
+    # Number of experts to use per sample (top-k routing)
+    moe_trajectory_top_k: int = 2
+    # Number of trajectory modes to generate
+    moe_trajectory_num_modes: int = 20
+
     # detection
     num_bounding_boxes: int = 30
 

@@ -3,7 +3,7 @@
 # 用于设置 navsim 导入所需的环境变量
 
 # 设置 DiffusionDrive 根目录路径
-export DIFFUSIONDRIVE_ROOT=/data2/file_swap/sh_space/DiffusionDrive
+export DIFFUSIONDRIVE_ROOT=/data2/file_swap/sh_space/MOEDrive
 
 # 设置 PYTHONPATH，将 DiffusionDrive 目录添加到 Python 搜索路径
 export PYTHONPATH=${DIFFUSIONDRIVE_ROOT}:${PYTHONPATH}
