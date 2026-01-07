@@ -8,8 +8,14 @@ from navsim.agents.diffusiondrive.transfuser_backbone import TransfuserBackbone
 from navsim.agents.diffusiondrive.transfuser_features import BoundingBox2DIndex
 from navsim.common.enums import StateSE2Index
 import torch.nn.functional as F
+from navsim.agents.diffusiondrive.modules.blocks import linear_relu_ln
 from torch.nn import TransformerDecoder,TransformerDecoderLayer
 from typing import Any, List, Dict, Optional, Union
+from navsim.agents.moe_transformer_decoder import (
+    MoETransformerDecoder,
+    MoETransformerDecoderLayer,
+    MoEConfig,
+)
 class V2TransfuserModel(nn.Module):
     """Torch module for Transfuser."""
 
@@ -61,15 +67,24 @@ class V2TransfuserModel(nn.Module):
             ),
         )
 
-        tf_decoder_layer = nn.TransformerDecoderLayer(
+        # MoE configuration for FFN-level MoE decoder
+        moe_cfg = MoEConfig(
+            num_experts=config.moe_num_experts,
+            top_k=config.moe_top_k,
+            router_temperature=config.moe_router_temperature,
+            router_z_loss_coef=config.moe_router_z_loss_coef,
+            load_balance_coef=config.moe_load_balance_coef,
+        )
+
+        tf_decoder_layer = MoETransformerDecoderLayer(
             d_model=config.tf_d_model,
             nhead=config.tf_num_head,
             dim_feedforward=config.tf_d_ffn,
             dropout=config.tf_dropout,
-            batch_first=True,
+            moe_cfg=moe_cfg,
         )
 
-        self._tf_decoder = nn.TransformerDecoder(
+        self._tf_decoder = MoETransformerDecoder(
             tf_decoder_layer,
             num_layers=config.tf_num_layers,
         )
@@ -120,12 +135,15 @@ class V2TransfuserModel(nn.Module):
         cross_bev_feature = self.bev_proj(cross_bev_feature.flatten(-2,-1).permute(0,2,1))
         cross_bev_feature = cross_bev_feature.permute(0,2,1).contiguous().view(batch_size, -1, bev_spatial_shape[0], bev_spatial_shape[1])
         query = self._query_embedding.weight[None, ...].repeat(batch_size, 1, 1)
-        query_out = self._tf_decoder(query, keyval)
+        query_out, moe_aux = self._tf_decoder(query, keyval)
 
         bev_semantic_map = self._bev_semantic_head(bev_feature_upscale)
         trajectory_query, agents_query = query_out.split(self._query_splits, dim=1)
 
         output: Dict[str, torch.Tensor] = {"bev_semantic_map": bev_semantic_map}
+        
+        # Add MoE auxiliary losses and usage statistics to output
+        output.update(moe_aux)
 
         trajectory = self._trajectory_head(trajectory_query)
         output.update(trajectory)

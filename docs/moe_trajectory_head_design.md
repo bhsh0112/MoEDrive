@@ -166,3 +166,4 @@ moe_trajectory_num_modes: int = 20
 3. **更好的路由机制**：使用更复杂的 router（如 attention-based router）
 4. **多级 MOE**：在不同层次使用 MOE（如 trajectory level 和 pose level）
 
+

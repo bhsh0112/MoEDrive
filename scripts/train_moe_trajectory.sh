@@ -20,3 +20,4 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 python $NAVSIM_DEVKIT_ROOT/navsim/planning/script/r
   +agent.config.moe_trajectory_num_modes=20 \
   +agent.config.moe_aux_loss_weight=0.2
 
+
