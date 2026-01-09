@@ -9,4 +9,4 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 python $NAVSIM_DEVKIT_ROOT/navsim/planning/script/r
   trainer.params.strategy=ddp_find_unused_parameters_true \
   cache_path="${NAVSIM_EXP_ROOT}/training_cache/" \
   use_cache_without_dataset=True \
-  force_cache_computation=False
+  force_cache_computation=False 
