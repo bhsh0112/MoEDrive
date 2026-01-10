@@ -1,0 +1,1 @@
+python navsim/planning/script/run_pdm_score.py train_test_split=navtest        agent=transfuser_agent         worker=ray_distributed         agent.checkpoint_path=ckpts/baseline_transfuser.ckpt experiment_name=transfuser_agent_eval

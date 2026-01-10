@@ -13,5 +13,8 @@ config:
 
   latent: False
 
+  # MoE decoder configuration
+  use_moe_decoder: False
+
 checkpoint_path: null
 lr: 1e-4

@@ -73,6 +73,9 @@ class TransfuserConfig:
     tf_num_head: int = 8
     tf_dropout: float = 0.0
 
+    # Decoder selection: if True, use MoE-based decoder; if False, use vanilla TransformerDecoder
+    use_moe_decoder: bool = False
+
     # MoE decoder hyper-parameters
     # Tuned default (Strategy A): keep capacity, avoid over-regularizing / overly-hard routing.
     moe_num_experts: int = 8

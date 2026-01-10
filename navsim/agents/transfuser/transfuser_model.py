@@ -61,32 +61,40 @@ class TransfuserModel(nn.Module):
             ),
         )
 
-        tf_decoder_layer = nn.TransformerDecoderLayer(
-            d_model=config.tf_d_model,
-            nhead=config.tf_num_head,
-            dim_feedforward=config.tf_d_ffn,
-            dropout=config.tf_dropout,
-            batch_first=True,
-        )
-
-        # Fully replace vanilla TransformerDecoder with MoE-based decoder.
-        # We keep the same I/O contract for downstream heads: (B, Q, D) -> (B, Q, D).
-        moe_cfg = MoEConfig(
-            num_experts=getattr(config, "moe_num_experts", 4),
-            top_k=getattr(config, "moe_top_k", 2),
-            router_temperature=getattr(config, "moe_router_temperature", 1.0),
-            router_z_loss_coef=getattr(config, "moe_router_z_loss_coef", 0.0),
-            load_balance_coef=getattr(config, "moe_load_balance_coef", 0.0),
-        )
-        # Aggressive variant: route between *full decoder layers* (self-attn + cross-attn + FFN) as experts.
-        self._tf_decoder = MoELayerwiseTransformerDecoder(
-            d_model=config.tf_d_model,
-            nhead=config.tf_num_head,
-            dim_feedforward=config.tf_d_ffn,
-            dropout=config.tf_dropout,
-            num_layers=config.tf_num_layers,
-            moe_cfg=moe_cfg,
-        )
+        # Select decoder type based on config
+        self._use_moe_decoder = getattr(config, "use_moe_decoder", False)
+        
+        if self._use_moe_decoder:
+            # MoE-based decoder: route between *full decoder layers* (self-attn + cross-attn + FFN) as experts.
+            # We keep the same I/O contract for downstream heads: (B, Q, D) -> (B, Q, D).
+            moe_cfg = MoEConfig(
+                num_experts=getattr(config, "moe_num_experts", 4),
+                top_k=getattr(config, "moe_top_k", 2),
+                router_temperature=getattr(config, "moe_router_temperature", 1.0),
+                router_z_loss_coef=getattr(config, "moe_router_z_loss_coef", 0.0),
+                load_balance_coef=getattr(config, "moe_load_balance_coef", 0.0),
+            )
+            self._tf_decoder = MoELayerwiseTransformerDecoder(
+                d_model=config.tf_d_model,
+                nhead=config.tf_num_head,
+                dim_feedforward=config.tf_d_ffn,
+                dropout=config.tf_dropout,
+                num_layers=config.tf_num_layers,
+                moe_cfg=moe_cfg,
+            )
+        else:
+            # Vanilla TransformerDecoder (original implementation)
+            tf_decoder_layer = nn.TransformerDecoderLayer(
+                d_model=config.tf_d_model,
+                nhead=config.tf_num_head,
+                dim_feedforward=config.tf_d_ffn,
+                dropout=config.tf_dropout,
+                batch_first=True,
+            )
+            self._tf_decoder = nn.TransformerDecoder(
+                decoder_layer=tf_decoder_layer,
+                num_layers=config.tf_num_layers,
+            )
         self._agent_head = AgentHead(
             num_agents=config.num_bounding_boxes,
             d_ffn=config.tf_d_ffn,
@@ -99,7 +107,7 @@ class TransfuserModel(nn.Module):
             d_model=config.tf_d_model,
         )
 
-    def forward(self, features: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    def forward(self, features: Dict[str, torch.Tensor], targets: Dict[str, torch.Tensor] = None) -> Dict[str, torch.Tensor]:
         """Torch module forward pass."""
 
         camera_feature: torch.Tensor = features["camera_feature"]
@@ -118,24 +126,33 @@ class TransfuserModel(nn.Module):
         keyval += self._keyval_embedding.weight[None, ...]
 
         query = self._query_embedding.weight[None, ...].repeat(batch_size, 1, 1)
-        # MoE decoder returns (output, aux). We keep downstream behavior unchanged by
-        # only using the output tensor here. Aux can be wired into training later.
-        query_out, moe_aux = self._tf_decoder(query, keyval)
+        
+        # Handle different decoder output formats
+        if self._use_moe_decoder:
+            # MoE decoder returns (output, aux)
+            query_out, moe_aux = self._tf_decoder(query, keyval)
+        else:
+            # Vanilla decoder returns only output
+            query_out = self._tf_decoder(query, keyval)
+            moe_aux = None
 
         bev_semantic_map = self._bev_semantic_head(bev_feature_upscale)
         trajectory_query, agents_query = query_out.split(self._query_splits, dim=1)
 
         output: Dict[str, torch.Tensor] = {"bev_semantic_map": bev_semantic_map}
-        # Expose MoE auxiliary losses and routing statistics for training/monitoring.
-        output.update(
-            {
-                "moe_aux_loss": moe_aux.get("moe_aux_loss"),
-                "moe_load_balance_loss": moe_aux.get("moe_load_balance_loss"),
-                "moe_router_z_loss": moe_aux.get("moe_router_z_loss"),
-                "moe_usage_fraction": moe_aux.get("moe_usage_fraction"),
-                "moe_usage_counts": moe_aux.get("moe_usage_counts"),
-            }
-        )
+        
+        # Expose MoE auxiliary losses and routing statistics for training/monitoring (only if using MoE)
+        if self._use_moe_decoder and moe_aux is not None:
+            output.update(
+                {
+                    "moe_aux_loss": moe_aux.get("moe_aux_loss"),
+                    "moe_load_balance_loss": moe_aux.get("moe_load_balance_loss"),
+                    "moe_router_z_loss": moe_aux.get("moe_router_z_loss"),
+                    "moe_usage_fraction": moe_aux.get("moe_usage_fraction"),
+                    "moe_usage_counts": moe_aux.get("moe_usage_counts"),
+                }
+            )
+        
         trajectory = self._trajectory_head(trajectory_query)
         output.update(trajectory)
 
