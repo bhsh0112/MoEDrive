@@ -86,6 +86,12 @@ class TransfuserConfig:
     moe_router_z_loss_coef: float = 1e-3
     # MoE loss weight (added to total training loss)
     moe_aux_loss_weight: float = 0.5
+    
+    # Multi-modal trajectory prediction
+    # If True, enable multi-modal trajectory prediction using MoE experts as modes
+    multimodal_trajectory: bool = False
+    # Number of trajectory modes to generate (should match moe_num_experts when multimodal_trajectory=True)
+    num_trajectory_modes: int = 20
 
     # detection
     num_bounding_boxes: int = 30
@@ -95,6 +101,11 @@ class TransfuserConfig:
     agent_class_weight: float = 10.0
     agent_box_weight: float = 1.0
     bev_semantic_weight: float = 10.0
+    
+    # Multi-modal trajectory loss weights (only used when multimodal_trajectory=True)
+    trajectory_mode_weight: float = 1.0  # Weight for mode classification loss
+    trajectory_position_weight: float = 1.0  # Weight for position (x, y) in distance calculation
+    trajectory_heading_weight: float = 1.0  # Weight for heading in distance calculation
 
     # BEV mapping
     bev_semantic_classes = {

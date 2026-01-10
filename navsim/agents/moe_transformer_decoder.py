@@ -32,6 +32,8 @@ class MoEConfig:
     router_z_loss_coef: float = 0.0
     load_balance_coef: float = 0.0
     router_temperature: float = 1.0
+    multimodal_mode: bool = False  # If True, return independent expert outputs for trajectory_query
+    trajectory_query_idx: int = 0  # Index of trajectory query in query sequence
 
 
 class MoEFeedForward(nn.Module):
@@ -380,22 +382,34 @@ class MoELayerwiseTransformerDecoder(nn.Module):
         load_balance_loss = tgt.new_zeros(())
         usage_counts = tgt.new_zeros((moe_cfg.num_experts,), dtype=tgt.dtype)
 
+        # In multimodal mode, store all expert outputs for the last layer (for trajectory_query)
+        multimodal_expert_outputs = None
+        if moe_cfg.multimodal_mode and self.num_layers > 0:
+            multimodal_expert_outputs = []
+
         for layer_idx in range(self.num_layers):
             # Sample-level router input:
             # Use the trajectory token (index 0) rather than mean-pooling all query tokens.
             # This tends to make routing more directly task-driven for planning.
-            pooled = x[:, 0, :]  # (B, D)
+            pooled = x[:, moe_cfg.trajectory_query_idx, :]  # (B, D)
             logits = self.routers[layer_idx](pooled)  # (B, E)
             if moe_cfg.router_temperature != 1.0:
                 logits = logits / max(moe_cfg.router_temperature, 1e-6)
 
-            topk_vals, topk_idx = torch.topk(logits, k=moe_cfg.top_k, dim=-1)  # (B, K)
+            # In multimodal mode for the last layer, use all experts
+            if moe_cfg.multimodal_mode and layer_idx == self.num_layers - 1:
+                top_k = moe_cfg.num_experts
+            else:
+                top_k = moe_cfg.top_k
+
+            topk_vals, topk_idx = torch.topk(logits, k=top_k, dim=-1)  # (B, K)
             topk_w = F.softmax(topk_vals, dim=-1, dtype=torch.float32).to(x.dtype)  # (B, K)
 
             # Usage stats
             usage_counts = usage_counts + torch.bincount(topk_idx.reshape(-1), minlength=moe_cfg.num_experts).to(x.dtype)
 
-            # Compute expert outputs (for selected experts only) and combine
+            # Compute expert outputs
+            # Normal mode: weighted combination of selected experts
             y = torch.zeros_like(x)
             for expert_id, expert_layer in enumerate(self.experts[layer_idx]):
                 sel = topk_idx == expert_id  # (B, K)
@@ -412,6 +426,28 @@ class MoELayerwiseTransformerDecoder(nn.Module):
                 )  # (N, Q, D)
                 w_sel = topk_w[b_idx, kth].view(-1, 1, 1)  # (N, 1, 1)
                 y[b_idx] += out_sel * w_sel
+            
+            # In multimodal mode for the last layer, additionally collect independent expert outputs for trajectory_query
+            if moe_cfg.multimodal_mode and layer_idx == self.num_layers - 1:
+                expert_outputs_list = []  # Store all expert outputs for trajectory_query
+                
+                # Process all experts independently to get trajectory_query outputs
+                for expert_id, expert_layer in enumerate(self.experts[layer_idx]):
+                    # Process with full query (including agents) to maintain context
+                    out_expert = expert_layer(
+                        x,
+                        memory,
+                        tgt_key_padding_mask=tgt_key_padding_mask,
+                        memory_key_padding_mask=memory_key_padding_mask,
+                    )  # (B, Q, D)
+                    
+                    # Extract only trajectory_query from this expert's output
+                    traj_query_expert = out_expert[:, moe_cfg.trajectory_query_idx:moe_cfg.trajectory_query_idx+1, :]  # (B, 1, D)
+                    expert_outputs_list.append(traj_query_expert)
+                
+                # Stack all expert outputs: (B, num_experts, 1, D)
+                multimodal_expert_outputs = torch.stack(expert_outputs_list, dim=1)
+            
             x = y
 
             # Aux losses (computed per layer)
@@ -435,6 +471,11 @@ class MoELayerwiseTransformerDecoder(nn.Module):
             "moe_usage_counts": usage_counts,
             "moe_usage_fraction": usage_counts / usage_counts.sum().clamp_min(1.0),
         }
+        
+        # In multimodal mode, attach expert outputs to aux for downstream use
+        if multimodal_expert_outputs is not None:
+            aux_out["multimodal_expert_outputs"] = multimodal_expert_outputs  # (B, num_experts, 1, D)
+        
         return x, aux_out
 
 

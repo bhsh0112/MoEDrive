@@ -67,12 +67,15 @@ class TransfuserModel(nn.Module):
         if self._use_moe_decoder:
             # MoE-based decoder: route between *full decoder layers* (self-attn + cross-attn + FFN) as experts.
             # We keep the same I/O contract for downstream heads: (B, Q, D) -> (B, Q, D).
+            multimodal_mode = getattr(config, "multimodal_trajectory", False)
             moe_cfg = MoEConfig(
                 num_experts=getattr(config, "moe_num_experts", 4),
                 top_k=getattr(config, "moe_top_k", 2),
                 router_temperature=getattr(config, "moe_router_temperature", 1.0),
                 router_z_loss_coef=getattr(config, "moe_router_z_loss_coef", 0.0),
                 load_balance_coef=getattr(config, "moe_load_balance_coef", 0.0),
+                multimodal_mode=multimodal_mode,
+                trajectory_query_idx=0,  # trajectory_query is always the first query token
             )
             self._tf_decoder = MoELayerwiseTransformerDecoder(
                 d_model=config.tf_d_model,
@@ -95,6 +98,9 @@ class TransfuserModel(nn.Module):
                 decoder_layer=tf_decoder_layer,
                 num_layers=config.tf_num_layers,
             )
+        
+        # Store multimodal flag for use in forward pass
+        self._multimodal_trajectory = getattr(config, "multimodal_trajectory", False)
         self._agent_head = AgentHead(
             num_agents=config.num_bounding_boxes,
             d_ffn=config.tf_d_ffn,
@@ -105,6 +111,8 @@ class TransfuserModel(nn.Module):
             num_poses=config.trajectory_sampling.num_poses,
             d_ffn=config.tf_d_ffn,
             d_model=config.tf_d_model,
+            multimodal_mode=self._multimodal_trajectory,
+            num_modes=getattr(config, "num_trajectory_modes", 20) if self._multimodal_trajectory else 1,
         )
 
     def forward(self, features: Dict[str, torch.Tensor], targets: Dict[str, torch.Tensor] = None) -> Dict[str, torch.Tensor]:
@@ -153,8 +161,39 @@ class TransfuserModel(nn.Module):
                 }
             )
         
-        trajectory = self._trajectory_head(trajectory_query)
-        output.update(trajectory)
+        # Check if we have multimodal expert outputs for trajectory_query
+        if self._multimodal_trajectory and moe_aux is not None:
+            multimodal_expert_outputs = moe_aux.get("multimodal_expert_outputs")
+            if multimodal_expert_outputs is not None:
+                # multimodal_expert_outputs shape: (B, num_experts, 1, D)
+                # Reshape to (B, num_experts, D) for trajectory_head
+                multimodal_trajectory_queries = multimodal_expert_outputs.squeeze(2)  # (B, num_experts, D)
+                trajectory_dict = self._trajectory_head(multimodal_trajectory_queries)
+                # In multimodal mode, trajectory_head returns:
+                # - trajectory: (B, num_modes, num_poses, 3) - all modes
+                # - trajectory_mode_scores: (B, num_modes) - mode confidence scores
+                # - trajectory_best: (B, num_poses, 3) - best trajectory
+                
+                # For backward compatibility: use trajectory_best as the main "trajectory" output
+                # but preserve all modes and scores in separate keys
+                trajectory_all_modes = trajectory_dict["trajectory"]  # (B, num_modes, num_poses, 3)
+                trajectory_best = trajectory_dict.get("trajectory_best")  # (B, num_poses, 3)
+                trajectory_mode_scores = trajectory_dict.get("trajectory_mode_scores")  # (B, num_modes)
+                
+                # Main trajectory output (for backward compatibility)
+                output["trajectory"] = trajectory_best if trajectory_best is not None else trajectory_all_modes[:, 0]
+                # Additional multimodal outputs
+                output["trajectory_modes"] = trajectory_all_modes  # All trajectory modes
+                if trajectory_mode_scores is not None:
+                    output["trajectory_mode_scores"] = trajectory_mode_scores
+            else:
+                # Fallback to single mode if multimodal_expert_outputs not available
+                trajectory = self._trajectory_head(trajectory_query)
+                output.update(trajectory)
+        else:
+            # Single mode trajectory prediction
+            trajectory = self._trajectory_head(trajectory_query)
+            output.update(trajectory)
 
         agents = self._agent_head(agents_query)
         output.update(agents)
@@ -206,29 +245,114 @@ class AgentHead(nn.Module):
 
 
 class TrajectoryHead(nn.Module):
-    """Trajectory prediction head."""
+    """
+    Trajectory prediction head.
+    
+    Supports both single-modal and multi-modal trajectory prediction.
+    In multi-modal mode, each expert query generates a different trajectory mode.
+    """
 
-    def __init__(self, num_poses: int, d_ffn: int, d_model: int):
+    def __init__(
+        self, 
+        num_poses: int, 
+        d_ffn: int, 
+        d_model: int,
+        multimodal_mode: bool = False,
+        num_modes: int = 1,
+    ):
         """
         Initializes trajectory head.
         :param num_poses: number of (x,y,θ) poses to predict
         :param d_ffn: dimensionality of feed-forward network
         :param d_model: input dimensionality
+        :param multimodal_mode: if True, enable multi-modal trajectory prediction
+        :param num_modes: number of trajectory modes (used only in multimodal_mode)
         """
         super(TrajectoryHead, self).__init__()
 
         self._num_poses = num_poses
         self._d_model = d_model
         self._d_ffn = d_ffn
+        self._multimodal_mode = multimodal_mode
+        self._num_modes = num_modes
 
+        # Trajectory regression head: predicts (x, y, heading) for each pose
         self._mlp = nn.Sequential(
             nn.Linear(self._d_model, self._d_ffn),
             nn.ReLU(),
             nn.Linear(self._d_ffn, num_poses * StateSE2Index.size()),
         )
+        
+        # Mode classification head: predicts confidence score for each mode (only in multimodal mode)
+        if self._multimodal_mode:
+            self._mode_cls_head = nn.Sequential(
+                nn.Linear(self._d_model, self._d_ffn),
+                nn.ReLU(),
+                nn.Linear(self._d_ffn, 1),  # Single scalar confidence score per mode
+            )
+        else:
+            self._mode_cls_head = None
 
     def forward(self, object_queries) -> Dict[str, torch.Tensor]:
-        """Torch module forward pass."""
-        poses = self._mlp(object_queries).reshape(-1, self._num_poses, StateSE2Index.size())
-        poses[..., StateSE2Index.HEADING] = poses[..., StateSE2Index.HEADING].tanh() * np.pi
-        return {"trajectory": poses}
+        """
+        Torch module forward pass.
+        
+        Args:
+            object_queries: 
+                - Single-modal: (B, 1, D) or (B, D)
+                - Multi-modal: (B, num_modes, D)
+        
+        Returns:
+            Dictionary containing:
+            - trajectory: 
+                - Single-modal: (B, num_poses, 3)
+                - Multi-modal: (B, num_modes, num_poses, 3)
+            - trajectory_mode_scores (only in multimodal_mode): (B, num_modes) - confidence scores
+            - trajectory_best (only in multimodal_mode): (B, num_poses, 3) - best trajectory based on mode scores
+        """
+        # Handle input shape: normalize to (B, num_queries, D)
+        if object_queries.dim() == 2:
+            # Input is (B, D), add sequence dimension
+            object_queries = object_queries.unsqueeze(1)  # (B, 1, D)
+        
+        batch_size = object_queries.shape[0]
+        num_queries = object_queries.shape[1]
+        
+        # Reshape for batch processing: (B * num_queries, D)
+        object_queries_flat = object_queries.view(batch_size * num_queries, self._d_model)
+        
+        # Predict trajectories: (B * num_queries, num_poses * 3)
+        poses_flat = self._mlp(object_queries_flat)
+        poses_flat = poses_flat.view(batch_size * num_queries, self._num_poses, StateSE2Index.size())
+        
+        # Apply heading normalization
+        poses_flat[..., StateSE2Index.HEADING] = poses_flat[..., StateSE2Index.HEADING].tanh() * np.pi
+        
+        # Reshape back: (B, num_queries, num_poses, 3)
+        poses = poses_flat.view(batch_size, num_queries, self._num_poses, StateSE2Index.size())
+        
+        # Handle output based on mode
+        if self._multimodal_mode:
+            # Multi-modal mode: output all modes
+            # poses shape: (B, num_modes, num_poses, 3)
+            
+            # Predict mode confidence scores
+            mode_scores_flat = self._mode_cls_head(object_queries_flat).squeeze(-1)  # (B * num_modes,)
+            mode_scores = mode_scores_flat.view(batch_size, num_queries)  # (B, num_modes)
+            
+            # Select best trajectory based on mode scores
+            best_mode_idx = mode_scores.argmax(dim=1)  # (B,)
+            # Use advanced indexing to select best trajectory for each batch element
+            batch_indices = torch.arange(batch_size, device=poses.device)
+            trajectory_best = poses[batch_indices, best_mode_idx]  # (B, num_poses, 3)
+            
+            return {
+                "trajectory": poses,  # (B, num_modes, num_poses, 3)
+                "trajectory_mode_scores": mode_scores,  # (B, num_modes)
+                "trajectory_best": trajectory_best,  # (B, num_poses, 3) - for backward compatibility
+            }
+        else:
+            # Single-modal mode: output single trajectory
+            # poses shape: (B, 1, num_poses, 3) -> (B, num_poses, 3)
+            trajectory = poses.squeeze(1)  # (B, num_poses, 3)
+            return {"trajectory": trajectory}

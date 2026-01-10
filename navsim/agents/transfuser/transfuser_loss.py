@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, Optional, Tuple
 from scipy.optimize import linear_sum_assignment
 
 import torch
@@ -18,8 +18,21 @@ def transfuser_loss(
     :param config: global Transfuser config
     :return: combined loss value
     """
-
-    trajectory_loss = F.l1_loss(predictions["trajectory"], targets["trajectory"])
+    
+    # Check if multimodal trajectory prediction is enabled
+    multimodal_mode = getattr(config, "multimodal_trajectory", False)
+    trajectory_modes = predictions.get("trajectory_modes")
+    
+    if multimodal_mode and trajectory_modes is not None:
+        # Multi-modal trajectory loss
+        trajectory_loss, trajectory_mode_loss = _multimodal_trajectory_loss(
+            targets["trajectory"], trajectory_modes, predictions.get("trajectory_mode_scores"), config
+        )
+    else:
+        # Single-modal trajectory loss
+        trajectory_loss = F.l1_loss(predictions["trajectory"], targets["trajectory"])
+        trajectory_mode_loss = None
+    
     agent_class_loss, agent_box_loss = _agent_loss(targets, predictions, config)
     bev_semantic_loss = F.cross_entropy(
         predictions["bev_semantic_map"], targets["bev_semantic_map"].long()
@@ -28,9 +41,16 @@ def transfuser_loss(
     moe_aux_loss = predictions.get("moe_aux_loss")
     if moe_aux_loss is None:
         moe_aux_loss = torch.zeros((), device=trajectory_loss.device, dtype=trajectory_loss.dtype)
+    
+    # Get trajectory mode classification loss weight (if multimodal)
+    trajectory_mode_weight = getattr(config, "trajectory_mode_weight", 1.0)
+    trajectory_mode_loss_value = torch.zeros((), device=trajectory_loss.device, dtype=trajectory_loss.dtype)
+    if trajectory_mode_loss is not None:
+        trajectory_mode_loss_value = trajectory_mode_loss
 
     loss = (
         config.trajectory_weight * trajectory_loss
+        + trajectory_mode_weight * trajectory_mode_loss_value
         + config.agent_class_weight * agent_class_loss
         + config.agent_box_weight * agent_box_loss
         + config.bev_semantic_weight * bev_semantic_loss
@@ -46,6 +66,10 @@ def transfuser_loss(
         "bev_semantic_loss": config.bev_semantic_weight * bev_semantic_loss,
         "moe_aux_loss": config.moe_aux_loss_weight * moe_aux_loss,
     }
+    
+    # Add trajectory mode loss if in multimodal mode
+    if trajectory_mode_loss is not None:
+        loss_dict["trajectory_mode_loss"] = trajectory_mode_weight * trajectory_mode_loss_value
 
     # Optional MoE components (may be None if model doesn't expose them)
     moe_lb = predictions.get("moe_load_balance_loss")
@@ -179,3 +203,91 @@ def _get_src_permutation_idx(indices):
     batch_idx = torch.cat([torch.full_like(src, i) for i, (src, _) in enumerate(indices)])
     src_idx = torch.cat([src for (src, _) in indices])
     return batch_idx, src_idx
+
+
+def _multimodal_trajectory_loss(
+    gt_trajectory: torch.Tensor,
+    pred_trajectory_modes: torch.Tensor,
+    pred_mode_scores: Optional[torch.Tensor],
+    config: TransfuserConfig,
+) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    """
+    Compute multi-modal trajectory prediction loss using Best-of-K strategy.
+    
+    This function implements the "Best-of-K" approach where:
+    1. For each predicted mode, compute distance to ground truth (handling heading properly)
+    2. Select the mode with minimum distance (best match)
+    3. Compute regression loss only for the best matching mode
+    4. Compute classification loss for mode selection (encouraging correct mode prediction)
+    
+    Args:
+        gt_trajectory: Ground truth trajectory, shape (B, num_poses, 3) where last dim is [x, y, heading]
+        pred_trajectory_modes: Predicted trajectory modes, shape (B, num_modes, num_poses, 3)
+        pred_mode_scores: Predicted mode confidence scores (logits), shape (B, num_modes) or None
+        config: TransfuserConfig with loss weights
+        
+    Returns:
+        Tuple containing:
+        - trajectory_regression_loss: L1 loss for best matching mode, scalar tensor
+        - trajectory_mode_classification_loss: Classification loss for mode selection, scalar tensor or None
+    """
+    batch_size, num_modes, num_poses, _ = pred_trajectory_modes.shape
+    device = pred_trajectory_modes.device
+    dtype = pred_trajectory_modes.dtype
+    
+    # Expand GT trajectory to match pred_trajectory_modes for easy comparison
+    gt_trajectory_expanded = gt_trajectory.unsqueeze(1).expand(-1, num_modes, -1, -1)  # (B, num_modes, num_poses, 3)
+    
+    # Compute distance for each mode
+    # For x, y: use L1 distance
+    # For heading: use angular distance (handling circular nature of angles)
+    pos_diff = torch.abs(pred_trajectory_modes[..., :2] - gt_trajectory_expanded[..., :2])  # (B, num_modes, num_poses, 2)
+    pos_distance = pos_diff.sum(dim=-1)  # (B, num_modes, num_poses)
+    
+    # Angular distance for heading (normalized to [0, pi])
+    heading_diff = pred_trajectory_modes[..., 2] - gt_trajectory_expanded[..., 2]  # (B, num_modes, num_poses)
+    # Normalize to [-pi, pi]
+    heading_diff = torch.atan2(torch.sin(heading_diff), torch.cos(heading_diff))
+    heading_distance = torch.abs(heading_diff)  # (B, num_modes, num_poses)
+    
+    # Combine position and heading distances with optional weights
+    # Default: equal weight for position and heading
+    position_weight = getattr(config, "trajectory_position_weight", 1.0)
+    heading_weight = getattr(config, "trajectory_heading_weight", 1.0)
+    
+    combined_distance = position_weight * pos_distance + heading_weight * heading_distance  # (B, num_modes, num_poses)
+    
+    # Average over poses to get per-mode distance: (B, num_modes)
+    per_mode_distance = combined_distance.mean(dim=2)  # (B, num_modes)
+    
+    # Find best matching mode (mode with minimum distance) for each sample
+    best_mode_idx = per_mode_distance.argmin(dim=1)  # (B,)
+    
+    # Extract best trajectory for each sample: (B, num_poses, 3)
+    batch_indices = torch.arange(batch_size, device=device)
+    best_trajectory = pred_trajectory_modes[batch_indices, best_mode_idx]  # (B, num_poses, 3)
+    
+    # Compute regression loss for best matching mode
+    # Position loss (L1)
+    pos_loss = F.l1_loss(best_trajectory[..., :2], gt_trajectory[..., :2], reduction="mean")
+    
+    # Heading loss (angular distance)
+    heading_diff_best = best_trajectory[..., 2] - gt_trajectory[..., 2]  # (B, num_poses)
+    heading_diff_best = torch.atan2(torch.sin(heading_diff_best), torch.cos(heading_diff_best))
+    heading_loss = torch.abs(heading_diff_best).mean()
+    
+    # Combined regression loss
+    trajectory_regression_loss = position_weight * pos_loss + heading_weight * heading_loss
+    
+    # Compute mode classification loss
+    trajectory_mode_classification_loss = None
+    if pred_mode_scores is not None and pred_mode_scores.numel() > 0:
+        # Use cross-entropy loss (treating mode selection as multi-class classification)
+        # pred_mode_scores: (B, num_modes) - logits
+        # best_mode_idx: (B,) - class indices (long tensor)
+        best_mode_idx_long = best_mode_idx.long()
+        trajectory_mode_classification_loss = F.cross_entropy(
+            pred_mode_scores, best_mode_idx_long, reduction="mean"
+        )
+    
+    return trajectory_regression_loss, trajectory_mode_classification_loss
