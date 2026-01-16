@@ -32,6 +32,13 @@ def transfuser_loss(
         # Single-modal trajectory loss
         trajectory_loss = F.l1_loss(predictions["trajectory"], targets["trajectory"])
         trajectory_mode_loss = None
+
+    # Expert diversity loss (encourage different modes to be different)
+    expert_div_loss = torch.zeros((), device=trajectory_loss.device, dtype=trajectory_loss.dtype)
+    expert_div_weight = float(getattr(config, "expert_diversity_weight", 0.0))
+    if multimodal_mode and trajectory_modes is not None and expert_div_weight > 0:
+        method = getattr(config, "expert_diversity_method", "pairwise_l2")
+        expert_div_loss = _expert_diversity_loss(trajectory_modes, method=method)
     
     agent_class_loss, agent_box_loss = _agent_loss(targets, predictions, config)
     bev_semantic_loss = F.cross_entropy(
@@ -51,6 +58,7 @@ def transfuser_loss(
     loss = (
         config.trajectory_weight * trajectory_loss
         + trajectory_mode_weight * trajectory_mode_loss_value
+        + expert_div_weight * expert_div_loss
         + config.agent_class_weight * agent_class_loss
         + config.agent_box_weight * agent_box_loss
         + config.bev_semantic_weight * bev_semantic_loss
@@ -66,10 +74,21 @@ def transfuser_loss(
         "bev_semantic_loss": config.bev_semantic_weight * bev_semantic_loss,
         "moe_aux_loss": config.moe_aux_loss_weight * moe_aux_loss,
     }
+    if multimodal_mode and trajectory_modes is not None:
+        loss_dict["expert_diversity_loss"] = expert_div_weight * expert_div_loss
     
     # Add trajectory mode loss if in multimodal mode
     if trajectory_mode_loss is not None:
         loss_dict["trajectory_mode_loss"] = trajectory_mode_weight * trajectory_mode_loss_value
+        # Log Top-K regression K (as a scalar)
+        try:
+            loss_dict["trajectory_topk_regression_k"] = torch.tensor(
+                float(int(getattr(config, "trajectory_topk_regression_k", 1))),
+                device=trajectory_loss.device,
+                dtype=trajectory_loss.dtype,
+            )
+        except Exception:
+            pass
 
     # Optional MoE components (may be None if model doesn't expose them)
     moe_lb = predictions.get("moe_load_balance_loss")
@@ -263,21 +282,45 @@ def _multimodal_trajectory_loss(
     # Find best matching mode (mode with minimum distance) for each sample
     best_mode_idx = per_mode_distance.argmin(dim=1)  # (B,)
     
-    # Extract best trajectory for each sample: (B, num_poses, 3)
+    # Regression loss: Best-of-K (default) or Top-K (optional)
+    # If K>1, compute regression loss on the closest K modes and average.
+    topk_k = int(getattr(config, "trajectory_topk_regression_k", 1))
+    topk_k = max(1, min(topk_k, int(num_modes)))
+
     batch_indices = torch.arange(batch_size, device=device)
-    best_trajectory = pred_trajectory_modes[batch_indices, best_mode_idx]  # (B, num_poses, 3)
-    
-    # Compute regression loss for best matching mode
-    # Position loss (L1)
-    pos_loss = F.l1_loss(best_trajectory[..., :2], gt_trajectory[..., :2], reduction="mean")
-    
-    # Heading loss (angular distance)
-    heading_diff_best = best_trajectory[..., 2] - gt_trajectory[..., 2]  # (B, num_poses)
-    heading_diff_best = torch.atan2(torch.sin(heading_diff_best), torch.cos(heading_diff_best))
-    heading_loss = torch.abs(heading_diff_best).mean()
-    
-    # Combined regression loss
-    trajectory_regression_loss = position_weight * pos_loss + heading_weight * heading_loss
+    if topk_k == 1:
+        # Extract best trajectory for each sample: (B, num_poses, 3)
+        best_trajectory = pred_trajectory_modes[batch_indices, best_mode_idx]  # (B, num_poses, 3)
+
+        # Position loss (L1)
+        pos_loss = F.l1_loss(best_trajectory[..., :2], gt_trajectory[..., :2], reduction="mean")
+
+        # Heading loss (angular distance)
+        heading_diff_best = best_trajectory[..., 2] - gt_trajectory[..., 2]  # (B, num_poses)
+        heading_diff_best = torch.atan2(torch.sin(heading_diff_best), torch.cos(heading_diff_best))
+        heading_loss = torch.abs(heading_diff_best).mean()
+
+        trajectory_regression_loss = position_weight * pos_loss + heading_weight * heading_loss
+    else:
+        # Indices of closest K modes: (B, K)
+        _, topk_idx = torch.topk(per_mode_distance, k=topk_k, dim=1, largest=False)
+
+        # Gather predicted trajectories: (B, K, num_poses, 3)
+        topk_traj = pred_trajectory_modes[batch_indices[:, None], topk_idx]
+
+        # Expand GT: (B, 1, num_poses, 3) -> (B, K, num_poses, 3)
+        gt_k = gt_trajectory.unsqueeze(1).expand(-1, topk_k, -1, -1)
+
+        # Position loss per mode
+        pos_l1 = torch.abs(topk_traj[..., :2] - gt_k[..., :2]).mean(dim=(2, 3))  # (B, K)
+
+        # Heading loss per mode (angular distance)
+        heading_diff = topk_traj[..., 2] - gt_k[..., 2]  # (B, K, num_poses)
+        heading_diff = torch.atan2(torch.sin(heading_diff), torch.cos(heading_diff))
+        heading_l1 = torch.abs(heading_diff).mean(dim=2)  # (B, K)
+
+        reg_per_mode = position_weight * pos_l1 + heading_weight * heading_l1  # (B, K)
+        trajectory_regression_loss = reg_per_mode.mean()
     
     # Compute mode classification loss
     trajectory_mode_classification_loss = None
@@ -291,3 +334,44 @@ def _multimodal_trajectory_loss(
         )
     
     return trajectory_regression_loss, trajectory_mode_classification_loss
+
+
+def _expert_diversity_loss(pred_trajectory_modes: torch.Tensor, method: str = "pairwise_l2") -> torch.Tensor:
+    """
+    Compute expert/mode diversity loss from predicted trajectories.
+
+    Args:
+        pred_trajectory_modes: (B, M, T, 3) where M is number of modes (experts).
+        method:
+            - "pairwise_l2": encourage large pairwise L2 distance (implemented as negative mean distance)
+            - "cosine_similarity": penalize high cosine similarity between flattened trajectories
+
+    Returns:
+        A scalar tensor (to be multiplied by config.expert_diversity_weight).
+        Lower is better when added to total loss.
+    """
+    if pred_trajectory_modes.ndim != 4:
+        return pred_trajectory_modes.new_zeros(())
+
+    b, m, t, d = pred_trajectory_modes.shape
+    if m <= 1:
+        return pred_trajectory_modes.new_zeros(())
+
+    x = pred_trajectory_modes.reshape(b, m, t * d)  # (B, M, F)
+
+    if method == "cosine_similarity":
+        x_norm = F.normalize(x, p=2, dim=-1, eps=1e-8)  # (B, M, F)
+        # cosine matrix: (B, M, M)
+        cos = torch.matmul(x_norm, x_norm.transpose(1, 2))
+        # exclude diagonal, penalize similarity
+        mask = ~torch.eye(m, device=cos.device, dtype=torch.bool)
+        return (cos[mask].view(b, m * (m - 1))).mean()
+
+    # default: pairwise_l2
+    # dist_ij = ||x_i - x_j||_2
+    # We *maximize* distance, so loss = -mean(dist_ij)
+    xi = x.unsqueeze(2)  # (B, M, 1, F)
+    xj = x.unsqueeze(1)  # (B, 1, M, F)
+    dist = torch.norm(xi - xj, p=2, dim=-1)  # (B, M, M)
+    mask = ~torch.eye(m, device=dist.device, dtype=torch.bool)
+    return -(dist[mask].view(b, m * (m - 1))).mean()

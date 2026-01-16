@@ -16,5 +16,45 @@ config:
   # MoE decoder configuration
   use_moe_decoder: False
 
+  # MoE staged training (3-stage strategy)
+  # - When enabled, MoEStagedTrainingCallback will update routing params and loss weights per-epoch.
+  # - Keep default False for backward compatibility.
+  moe_staged_training_enabled: False
+  moe_staged_training_adaptive: True
+  # Optional schedule dict. If omitted/null, the default 3-stage schedule from code is used.
+  # To customize, you can pass a nested dict here (Hydra/YAML-friendly).
+  # moe_staged_training_schedule:
+  #   stages_order: ["stage1", "stage2", "stage3"]
+  #   stages:
+  #     stage1:
+  #       epoch_range: [0, 30]
+  #       router_temperature: [2.5, 1.5]
+  #       top_k: [20, 15]
+  #       load_balance_coef: [1.0e-2, 1.0e-2]
+  #       moe_aux_loss_weight: [0.5, 0.5]
+  #       trajectory_position_weight: [1.0, 1.2]
+  #       trajectory_heading_weight: [1.5, 1.8]
+  #       trajectory_mode_weight: [1.5, 2.0]
+  #     stage2:
+  #       epoch_range: [30, 100]
+  #       router_temperature: [1.5, 1.0]
+  #       top_k: [15, 10]
+  #       load_balance_coef: [1.0e-2, 5.0e-3]
+  #       moe_aux_loss_weight: [0.5, 0.3]
+  #       expert_diversity_weight: [0.0, 0.1]
+  #       trajectory_position_weight: [1.2, 1.0]
+  #       trajectory_heading_weight: [1.8, 1.5]
+  #       trajectory_mode_weight: [2.0, 2.5]
+  #     stage3:
+  #       epoch_range: [100, 150]
+  #       router_temperature: [1.0, 1.0]
+  #       top_k: [10, 10]
+  #       load_balance_coef: [5.0e-3, 1.0e-3]
+  #       moe_aux_loss_weight: [0.3, 0.1]
+  #       expert_diversity_weight: [0.1, 0.1]
+  #       trajectory_position_weight: [1.0, 1.0]
+  #       trajectory_heading_weight: [1.5, 1.5]
+  #       trajectory_mode_weight: [2.5, 2.5]
+
 checkpoint_path: null
 lr: 1e-4

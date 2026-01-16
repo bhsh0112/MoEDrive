@@ -9,6 +9,9 @@ from navsim.agents.abstract_agent import AbstractAgent
 from navsim.agents.transfuser.transfuser_config import TransfuserConfig
 from navsim.agents.transfuser.transfuser_model import TransfuserModel
 from navsim.agents.transfuser.transfuser_callback import TransfuserCallback
+from navsim.agents.transfuser.moe_staged_training_callback import MoEStagedTrainingCallback
+from navsim.agents.transfuser.moe_expert_usage_callback import MoEExpertUsageCallback
+from navsim.agents.transfuser.warmup_cosine_lr_callback import WarmupCosineLRSchedulerCallback
 from navsim.agents.transfuser.transfuser_loss import transfuser_loss
 from navsim.agents.transfuser.transfuser_features import TransfuserFeatureBuilder, TransfuserTargetBuilder
 from navsim.common.dataclasses import SensorConfig
@@ -83,4 +86,23 @@ class TransfuserAgent(AbstractAgent):
 
     def get_training_callbacks(self) -> List[pl.Callback]:
         """Inherited, see superclass."""
-        return [TransfuserCallback(self._config)]
+        callbacks: List[pl.Callback] = [TransfuserCallback(self._config)]
+        if bool(getattr(self._config, "moe_staged_training_enabled", False)):
+            callbacks.append(MoEStagedTrainingCallback(self._config))
+        # Standalone expert usage monitor (logs + visualization + persistence)
+        if bool(getattr(self._config, "use_moe_decoder", False)) and (
+            bool(getattr(self._config, "moe_staged_training_enabled", False))
+            or bool(getattr(self._config, "moe_usage_visualization_enabled", False))
+            or bool(getattr(self._config, "moe_usage_history_save_enabled", False))
+        ):
+            callbacks.append(MoEExpertUsageCallback(self._config))
+        if bool(getattr(self._config, "lr_schedule_enabled", False)):
+            callbacks.append(
+                WarmupCosineLRSchedulerCallback(
+                    warmup_epochs=int(getattr(self._config, "lr_warmup_epochs", 5)),
+                    min_lr_ratio=float(getattr(self._config, "lr_min_ratio", 0.1)),
+                    stage3_fixed_enabled=bool(getattr(self._config, "lr_stage3_fixed_enabled", False)),
+                    stage3_start_epoch=int(getattr(self._config, "lr_stage3_start_epoch", 100)),
+                )
+            )
+        return callbacks

@@ -2,17 +2,21 @@
 # Source environment variables
 source scripts/SetPath.sh
 
-# 优化版本2：减少专家数量的训练脚本
+# 专家数量实验脚本：16个专家版本
 #
-# 主要变化：
-# - 专家数量从20减少到16（如果20个专家导致负载不均衡）
-# - 其他优化与optimized版本相同
+# 目的：测试不同专家数量的效果
+# - 如果20个专家导致某些专家使用率过低，16个可能更优
+# - 16个专家计算开销更小，训练更快
 #
-# 使用场景：当20个专家导致某些专家使用率过低时使用
+# 配置说明：
+# - moe_num_experts: 20 -> 16
+# - num_trajectory_modes: 20 -> 16
+# - moe_top_k: 20 -> 16
+# - 其他配置与optimized版本相同
 
 CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python $NAVSIM_DEVKIT_ROOT/navsim/planning/script/run_training.py \
   agent=transfuser_agent \
-  experiment_name=training_transfuser_moe_multimodal_v2 \
+  experiment_name=training_transfuser_moe_multimodal_experts_16 \
   train_test_split=navtrain \
   split=trainval \
   trainer.params.max_epochs=150 \

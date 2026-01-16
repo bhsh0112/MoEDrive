@@ -55,3 +55,4 @@ python navsim/planning/script/run_pdm_score.py \
   +agent.config.trajectory_position_weight=1.0 \
   +agent.config.trajectory_heading_weight=1.0
 
+

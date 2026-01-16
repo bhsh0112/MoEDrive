@@ -148,8 +148,8 @@ class TransfuserModel(nn.Module):
         trajectory_query, agents_query = query_out.split(self._query_splits, dim=1)
 
         output: Dict[str, torch.Tensor] = {"bev_semantic_map": bev_semantic_map}
-        
-        # Expose MoE auxiliary losses and routing statistics for training/monitoring (only if using MoE)
+
+        # Expose MoE辅助损失和路由统计信息（仅MoE场景）
         if self._use_moe_decoder and moe_aux is not None:
             output.update(
                 {
@@ -160,40 +160,33 @@ class TransfuserModel(nn.Module):
                     "moe_usage_counts": moe_aux.get("moe_usage_counts"),
                 }
             )
-        
-        # Check if we have multimodal expert outputs for trajectory_query
+
+        # 多模态：优先使用专家独立输出的轨迹query
         if self._multimodal_trajectory and moe_aux is not None:
             multimodal_expert_outputs = moe_aux.get("multimodal_expert_outputs")
             if multimodal_expert_outputs is not None:
-                # multimodal_expert_outputs shape: (B, num_experts, 1, D)
-                # Reshape to (B, num_experts, D) for trajectory_head
-                multimodal_trajectory_queries = multimodal_expert_outputs.squeeze(2)  # (B, num_experts, D)
+                # multimodal_expert_outputs: (B, num_experts, 1, D) -> (B, num_experts, D)
+                multimodal_trajectory_queries = multimodal_expert_outputs.squeeze(2)
                 trajectory_dict = self._trajectory_head(multimodal_trajectory_queries)
-                # In multimodal mode, trajectory_head returns:
-                # - trajectory: (B, num_modes, num_poses, 3) - all modes
-                # - trajectory_mode_scores: (B, num_modes) - mode confidence scores
-                # - trajectory_best: (B, num_poses, 3) - best trajectory
-                
-                # For backward compatibility: use trajectory_best as the main "trajectory" output
-                # but preserve all modes and scores in separate keys
+
                 trajectory_all_modes = trajectory_dict["trajectory"]  # (B, num_modes, num_poses, 3)
-                trajectory_best = trajectory_dict.get("trajectory_best")  # (B, num_poses, 3)
-                trajectory_mode_scores = trajectory_dict.get("trajectory_mode_scores")  # (B, num_modes)
-                
-                # Main trajectory output (for backward compatibility)
+                trajectory_best = trajectory_dict.get("trajectory_best")
+                trajectory_mode_scores = trajectory_dict.get("trajectory_mode_scores")
+
+                # 主输出：best 轨迹，兼容旧接口
                 output["trajectory"] = trajectory_best if trajectory_best is not None else trajectory_all_modes[:, 0]
-                # Additional multimodal outputs
-                output["trajectory_modes"] = trajectory_all_modes  # All trajectory modes
+                # 附加多模态输出
+                output["trajectory_modes"] = trajectory_all_modes
                 if trajectory_mode_scores is not None:
                     output["trajectory_mode_scores"] = trajectory_mode_scores
             else:
-                # Fallback to single mode if multimodal_expert_outputs not available
-                trajectory = self._trajectory_head(trajectory_query)
-                output.update(trajectory)
+                # 没有多模态专家输出时，退化为单模态
+                single_traj = self._trajectory_head(trajectory_query)
+                output.update(single_traj)
         else:
-            # Single mode trajectory prediction
-            trajectory = self._trajectory_head(trajectory_query)
-            output.update(trajectory)
+            # 单模态
+            single_traj = self._trajectory_head(trajectory_query)
+            output.update(single_traj)
 
         agents = self._agent_head(agents_query)
         output.update(agents)

@@ -1,5 +1,5 @@
-from dataclasses import dataclass
-from typing import Tuple
+from dataclasses import dataclass, field
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 from nuplan.common.maps.abstract_map import SemanticMapLayer
@@ -106,6 +106,66 @@ class TransfuserConfig:
     trajectory_mode_weight: float = 1.0  # Weight for mode classification loss
     trajectory_position_weight: float = 1.0  # Weight for position (x, y) in distance calculation
     trajectory_heading_weight: float = 1.0  # Weight for heading in distance calculation
+
+    # Multi-modal regression: Top-K loss (optional, default keeps Best-of-K behavior)
+    # - If trajectory_topk_regression_k > 1, compute regression loss on the closest K modes to GT and average.
+    trajectory_topk_regression_k: int = 1
+
+    # Trajectory evaluation metrics (validation only)
+    trajectory_metrics_enabled: bool = False
+    trajectory_miss_threshold_m: float = 2.0
+
+    # MoE expert usage visualization (TensorBoard image)
+    moe_usage_visualization_enabled: bool = False
+
+    # MoE expert usage history persistence (CSV/JSONL) for offline analysis
+    moe_usage_history_save_enabled: bool = False
+    moe_usage_history_csv_name: str = "moe_expert_usage_history.csv"
+    moe_usage_history_jsonl_name: str = "moe_expert_usage_history.jsonl"
+
+    # Expert specialization evaluation (validation only; multi-modal only)
+    expert_specialization_metrics_enabled: bool = False
+    # Supported: "pairwise_l2" | "cosine_similarity"
+    expert_specialization_method: str = "pairwise_l2"
+
+    # Expert diversity loss (only meaningful when multimodal_trajectory=True)
+    # - Weight is dynamically scheduled by MoETrainingScheduler via callback if enabled.
+    expert_diversity_weight: float = 0.0
+    # Supported: "pairwise_l2" | "cosine_similarity"
+    expert_diversity_method: str = "pairwise_l2"
+
+    # Dynamic Top-K (stage3 recommendation: 8-12)
+    # If enabled and staged training callback has expert usage stats, scheduler can override moe_top_k dynamically.
+    moe_dynamic_top_k_enabled: bool = False
+    moe_dynamic_top_k_min_k: int = 8
+    moe_dynamic_top_k_max_k: int = 12
+    # Experts with usage_fraction > threshold are considered "active".
+    moe_dynamic_top_k_active_threshold: float = 0.05
+
+    # Learning rate schedule (optional)
+    # If enabled, a callback will apply:
+    # - linear warmup for `lr_warmup_epochs`
+    # - cosine decay to `lr_min_ratio` of the base lr by max_epochs
+    lr_schedule_enabled: bool = False
+    lr_warmup_epochs: int = 5
+    lr_min_ratio: float = 0.1
+    # If True, apply scheme (2):
+    # - warmup + cosine until `lr_stage3_start_epoch`
+    # - then keep lr fixed at `lr_min_ratio * base_lr` for stage3 fine-tuning.
+    lr_stage3_fixed_enabled: bool = False
+    lr_stage3_start_epoch: int = 100
+
+    # ---------------------------------------------------------------------
+    # MoE staged training (3-stage strategy)
+    # ---------------------------------------------------------------------
+    # If True, a training callback / loop can use `MoETrainingScheduler` to update
+    # MoE routing parameters and loss weights dynamically by epoch.
+    moe_staged_training_enabled: bool = False
+    # If True, enable simple adaptive adjustments based on expert usage (revive dead experts, reduce overuse).
+    moe_staged_training_adaptive: bool = True
+    # Optional schedule dict (Hydra/YAML-friendly). If None, a default 3-stage schedule is used.
+    # See: `navsim.agents.transfuser.moe_training_scheduler.MoETrainingScheduler.build_default_three_stage_schedule`.
+    moe_staged_training_schedule: Optional[Dict[str, Any]] = field(default=None)
 
     # BEV mapping
     bev_semantic_classes = {

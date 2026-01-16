@@ -1,0 +1,92 @@
+hydra:
+  run:
+    dir: ${output_dir}
+  output_subdir: ${output_dir}/code/hydra
+  searchpath:
+    - pkg://navsim.planning.script.config.common
+  job:
+    chdir: False
+
+defaults:
+  - default_common
+  - default_evaluation
+  - default_train_val_test_log_split
+  - agent: transfuser_agent
+  - _self_
+
+split: trainval
+cache_path: ${oc.env:NAVSIM_EXP_ROOT}/training_cache
+use_cache_without_dataset: false
+force_cache_computation: true
+seed: 0
+
+# Override agent config for staged MoE training
+agent:
+  config:
+    # Enable MoE decoder
+    use_moe_decoder: True
+
+    # Recommended for multimodal MoE-as-modes
+    multimodal_trajectory: True
+    moe_num_experts: 20
+    num_trajectory_modes: 20
+    trajectory_topk_regression_k: 5
+
+    # LR schedule (warmup + cosine)
+    lr_schedule_enabled: True
+    lr_warmup_epochs: 5
+    lr_min_ratio: 0.1
+    lr_stage3_fixed_enabled: True
+    lr_stage3_start_epoch: 100
+
+    # Validation metrics
+    trajectory_metrics_enabled: True
+    trajectory_miss_threshold_m: 2.0
+
+    # MoE usage visualization
+    moe_usage_visualization_enabled: True
+
+    # Expert specialization metrics (validation only)
+    expert_specialization_metrics_enabled: True
+    expert_specialization_method: pairwise_l2
+
+    # MoE usage history persistence
+    moe_usage_history_save_enabled: True
+
+    # Enable 3-stage schedule callback
+    moe_staged_training_enabled: True
+    moe_staged_training_adaptive: True
+    # moe_staged_training_schedule: null  # use default schedule from code
+
+dataloader:
+  params:
+    batch_size: 64
+    num_workers: 4
+    pin_memory: true
+    prefetch_factor: 2
+
+trainer:
+  params:
+    # Align with 3-stage design (0-150 epochs)
+    max_epochs: 150
+    check_val_every_n_epoch: 1
+    val_check_interval: 1.0
+
+    limit_train_batches: 1.0
+    limit_val_batches: 1.0
+
+    accelerator: gpu
+    # MoE with top-k routing can leave some experts unused; avoid DDP unused parameter errors.
+    strategy: ddp_find_unused_parameters_true
+    precision: 16-mixed
+    num_nodes: 1
+
+    num_sanity_val_steps: 0
+    fast_dev_run: false
+
+    accumulate_grad_batches: 1
+    gradient_clip_val: 0.0
+    gradient_clip_algorithm: norm
+    default_root_dir: ${output_dir}
+
+

@@ -26,3 +26,4 @@ CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python $NAVSIM_DEVKIT_ROOT/navsim/planning/
   +agent.config.trajectory_position_weight=1.0 \
   +agent.config.trajectory_heading_weight=1.0
 
+

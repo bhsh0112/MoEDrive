@@ -367,6 +367,44 @@ class MoELayerwiseTransformerDecoder(nn.Module):
             ]
         )
 
+    def set_router_temperature(self, temperature: float) -> None:
+        """
+        Update router temperature at runtime.
+
+        Args:
+            temperature: Router temperature (> 0). Higher means more exploration.
+        """
+        self.moe_cfg.router_temperature = max(float(temperature), 1e-6)
+
+    def set_top_k(self, top_k: int) -> None:
+        """
+        Update top-k at runtime.
+
+        Args:
+            top_k: Number of experts to activate (1 <= top_k <= num_experts).
+        """
+        k = int(top_k)
+        k = max(1, min(k, int(self.moe_cfg.num_experts)))
+        self.moe_cfg.top_k = k
+
+    def set_load_balance_coef(self, load_balance_coef: float) -> None:
+        """
+        Update load-balance coefficient at runtime.
+
+        Args:
+            load_balance_coef: Non-negative coefficient for load-balance loss.
+        """
+        self.moe_cfg.load_balance_coef = max(float(load_balance_coef), 0.0)
+
+    def set_router_z_loss_coef(self, router_z_loss_coef: float) -> None:
+        """
+        Update router z-loss coefficient at runtime.
+
+        Args:
+            router_z_loss_coef: Non-negative coefficient for router z-loss.
+        """
+        self.moe_cfg.router_z_loss_coef = max(float(router_z_loss_coef), 0.0)
+
     def forward(
         self,
         tgt: torch.Tensor,

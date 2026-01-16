@@ -69,7 +69,7 @@ else
     python navsim/planning/script/run_pdm_score.py \
       train_test_split=navtest \
       agent=transfuser_agent \
-      worker=ray_distributed \
+       worker=ray_distributed \
       agent.checkpoint_path="${CHECKPOINT_PATH}" \
       experiment_name="${EXPERIMENT_NAME}" \
   agent.config.use_moe_decoder=True \
