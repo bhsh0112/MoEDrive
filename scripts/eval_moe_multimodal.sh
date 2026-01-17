@@ -17,8 +17,8 @@
 # - num_trajectory_modes: 轨迹模式数量（必须与moe_num_experts匹配）
 
 # 配置变量
-CHECKPOINT_PATH="${1:-ckpts/moe_multimodal_model.ckpt}"
-EXPERIMENT_NAME="${2:-transfuser_moe_multimodal_eval}"
+CHECKPOINT_PATH="${1:-ckpts/moe_test_staged.ckpt}"
+EXPERIMENT_NAME="${2:-transfuser_moe_test_staged_eval}"
 
 # 检查checkpoint路径
 if [ ! -f "$CHECKPOINT_PATH" ]; then

@@ -47,14 +47,14 @@ def compute_mode_specialization_metrics(
     if method == "cosine_similarity":
         x_norm = F.normalize(x, p=2, dim=-1, eps=1e-8)
         cos = torch.matmul(x_norm, x_norm.transpose(1, 2))  # (B, M, M)
-        val = cos[:, mask].view(b, m * (m - 1)).mean()
+        val = cos.masked_select(mask.unsqueeze(0)).view(b, m * (m - 1)).mean()
         return {"mode_pairwise_cosine": val}
 
     # default: pairwise_l2
     xi = x.unsqueeze(2)  # (B, M, 1, F)
     xj = x.unsqueeze(1)  # (B, 1, M, F)
     dist = torch.norm(xi - xj, p=2, dim=-1)  # (B, M, M)
-    val = dist[:, mask].view(b, m * (m - 1)).mean()
+    val = dist.masked_select(mask.unsqueeze(0)).view(b, m * (m - 1)).mean()
     return {"mode_pairwise_l2": val}
 
 

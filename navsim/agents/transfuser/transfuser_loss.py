@@ -365,7 +365,8 @@ def _expert_diversity_loss(pred_trajectory_modes: torch.Tensor, method: str = "p
         cos = torch.matmul(x_norm, x_norm.transpose(1, 2))
         # exclude diagonal, penalize similarity
         mask = ~torch.eye(m, device=cos.device, dtype=torch.bool)
-        return (cos[mask].view(b, m * (m - 1))).mean()
+        vals = cos.masked_select(mask.unsqueeze(0)).view(b, m * (m - 1))
+        return vals.mean()
 
     # default: pairwise_l2
     # dist_ij = ||x_i - x_j||_2
@@ -374,4 +375,5 @@ def _expert_diversity_loss(pred_trajectory_modes: torch.Tensor, method: str = "p
     xj = x.unsqueeze(1)  # (B, 1, M, F)
     dist = torch.norm(xi - xj, p=2, dim=-1)  # (B, M, M)
     mask = ~torch.eye(m, device=dist.device, dtype=torch.bool)
-    return -(dist[mask].view(b, m * (m - 1))).mean()
+    vals = dist.masked_select(mask.unsqueeze(0)).view(b, m * (m - 1))
+    return -vals.mean()
