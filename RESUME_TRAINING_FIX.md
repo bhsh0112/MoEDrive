@@ -79,3 +79,4 @@ bash scripts/train_moe_multimodal_resume_symlink.sh \
 3. **检查checkpoint**: 确保checkpoint文件完整且可读
 
 
+

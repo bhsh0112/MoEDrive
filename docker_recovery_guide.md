@@ -213,3 +213,4 @@ docker inspect <container_id> | jq '.[0].Config.Cmd' > container_config.json
 
 
 
+

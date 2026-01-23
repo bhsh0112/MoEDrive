@@ -212,7 +212,12 @@ class MoETrainingScheduler:
             "stages": {
                 "stage1": {
                     "epoch_range": [0, 30],
-                    "router_temperature": [2.5, 1.5],
+                    # NOTE:
+                    # We intentionally keep stage1 routing "softer" for longer to reduce early
+                    # over-concentration and "dead expert" collapse when using many experts
+                    # (e.g., multimodal_trajectory with moe_num_experts=20).
+                    # Previously: [2.5, 1.5] (aggressive annealing). Now: [2.5, 2.0].
+                    "router_temperature": [2.5, 2.0],
                     "top_k": [min(num_experts, 20), min(num_experts, 15)],
                     "load_balance_coef": [1e-2, 1e-2],
                     "moe_aux_loss_weight": [0.5, 0.5],

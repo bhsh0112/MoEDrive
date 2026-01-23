@@ -14,6 +14,11 @@ class TransfuserConfig:
     trajectory_sampling: TrajectorySampling = TrajectorySampling(time_horizon=4, interval_length=0.5)
 
     image_architecture: str = "resnet34"
+    image_backbone_type: str = "timm_cnn"
+    image_backbone_pretrained: bool = True
+    image_backbone_out_indices: Optional[Tuple[int, int, int, int]] = None
+    image_backbone_single_scale_mode: str = "pyramid"
+    image_backbone_single_scale_strides: Tuple[int, int, int, int] = (1, 2, 4, 8)
     lidar_architecture: str = "resnet34"
 
     latent: bool = False
